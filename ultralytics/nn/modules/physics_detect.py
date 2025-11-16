@@ -1,10 +1,12 @@
+# Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
+
 # ultralytics/nn/modules/physics_detect.py
 import torch
 import torch.nn as nn
 
-from .conv import Conv, DWConv
-from .block import DFL
 from ...utils.tal import dist2bbox, make_anchors
+from .block import DFL
+from .conv import Conv, DWConv
 
 
 class PhysicsDetect(nn.Module):
@@ -39,7 +41,8 @@ class PhysicsDetect(nn.Module):
                 nn.Sequential(DWConv(x, x, 3), Conv(x, c3, 1)),
                 nn.Sequential(DWConv(c3, c3, 3), Conv(c3, c3, 1)),
                 nn.Conv2d(c3, self.nc, 1),
-            ) for x in ch
+            )
+            for x in ch
         )
 
         # PHYSICS BRANCHES - Core of our innovation
@@ -47,24 +50,27 @@ class PhysicsDetect(nn.Module):
             nn.Sequential(
                 Conv(x, max(64, x // 4), 3),
                 nn.Conv2d(max(64, x // 4), 1, 1),  # Specular intensity
-                nn.Sigmoid()  # 0-1 range
-            ) for x in ch
+                nn.Sigmoid(),  # 0-1 range
+            )
+            for x in ch
         )
 
         self.cv_smoothness = nn.ModuleList(
             nn.Sequential(
                 Conv(x, max(64, x // 4), 3),
                 nn.Conv2d(max(64, x // 4), 1, 1),  # Surface smoothness
-                nn.Sigmoid()  # 0-1 range
-            ) for x in ch
+                nn.Sigmoid(),  # 0-1 range
+            )
+            for x in ch
         )
 
         self.cv_reflectance = nn.ModuleList(
             nn.Sequential(
                 Conv(x, max(64, x // 4), 3),
                 nn.Conv2d(max(64, x // 4), 1, 1),  # Reflectance ratio
-                nn.Sigmoid()  # 0-1 range
-            ) for x in ch
+                nn.Sigmoid(),  # 0-1 range
+            )
+            for x in ch
         )
 
         # Fusion layer to combine physics features with classification
@@ -72,8 +78,9 @@ class PhysicsDetect(nn.Module):
             nn.Sequential(
                 Conv(self.nc + 3, 256, 1),  # +3 for physics features
                 Conv(256, 128, 3),
-                nn.Conv2d(128, self.nc, 1)  # Back to original class count
-            ) for _ in ch
+                nn.Conv2d(128, self.nc, 1),  # Back to original class count
+            )
+            for _ in ch
         )
 
         self.dfl = DFL(self.reg_max) if self.reg_max > 1 else nn.Identity()
@@ -101,12 +108,14 @@ class PhysicsDetect(nn.Module):
             fused_cls = self.fusion_conv[i](enhanced_cls)  # [B, nc, H, W]
 
             # Store physics features for loss computation
-            physics_outputs.append({
-                'specular': specular,
-                'smoothness': smoothness,
-                'reflectance': reflectance,
-                'combined_physics': physics_features
-            })
+            physics_outputs.append(
+                {
+                    "specular": specular,
+                    "smoothness": smoothness,
+                    "reflectance": reflectance,
+                    "combined_physics": physics_features,
+                }
+            )
 
             # Final output (regression + fused classification)
             x[i] = torch.cat([reg_feat, fused_cls], dim=1)
@@ -132,7 +141,7 @@ class PhysicsDetect(nn.Module):
         return dist2bbox(
             bboxes,
             anchors,
-            xywh=xywh and not getattr(self, 'end2end', False) and not self.xyxy,
+            xywh=xywh and not getattr(self, "end2end", False) and not self.xyxy,
             dim=1,
         )
 
@@ -141,7 +150,7 @@ class PhysicsDetect(nn.Module):
         # Boost wet class confidence initialization
         for a, b, s in zip(self.cv2, self.cv3, self.stride):
             a[-1].bias.data[:] = 1.0  # box
-            b[-1].bias.data[:self.nc] = torch.log(torch.tensor(5 / self.nc / (640 / s) ** 2))
+            b[-1].bias.data[: self.nc] = torch.log(torch.tensor(5 / self.nc / (640 / s) ** 2))
 
             # Optional: Slightly boost wet class initialization if you know its index
             # Example: if wet surface is class 0
@@ -155,10 +164,7 @@ class PhysicsDetect(nn.Module):
             smoothness = self.cv_smoothness[i](x[i])
             reflectance = self.cv_reflectance[i](x[i])
 
-            physics_maps.append({
-                'specular': specular,
-                'smoothness': smoothness,
-                'reflectance': reflectance,
-                'layer': i
-            })
+            physics_maps.append(
+                {"specular": specular, "smoothness": smoothness, "reflectance": reflectance, "layer": i}
+            )
         return physics_maps

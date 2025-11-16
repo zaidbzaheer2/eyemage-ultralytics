@@ -54,6 +54,7 @@ from ultralytics.nn.modules import (
     ImagePoolingAttn,
     Index,
     LRPCHead,
+    PhysicsDetect,
     Pose,
     RepC3,
     RepConv,
@@ -68,7 +69,6 @@ from ultralytics.nn.modules import (
     YOLOEDetect,
     YOLOESegment,
     v10Detect,
-    PhysicsDetect
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, LOGGER, YAML, colorstr, emojis
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
@@ -1625,7 +1625,18 @@ def parse_model(d, ch, verbose=True):
         elif m is Concat:
             c2 = sum(ch[x] for x in f)
         elif m in frozenset(
-            {Detect, WorldDetect, YOLOEDetect, Segment, YOLOESegment, Pose, OBB, ImagePoolingAttn, v10Detect, PhysicsDetect}
+            {
+                Detect,
+                WorldDetect,
+                YOLOEDetect,
+                Segment,
+                YOLOESegment,
+                Pose,
+                OBB,
+                ImagePoolingAttn,
+                v10Detect,
+                PhysicsDetect,
+            }
         ):
             args.append([ch[x] for x in f])
             if m is Segment or m is YOLOESegment:
