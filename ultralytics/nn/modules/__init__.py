@@ -89,6 +89,7 @@ from .head import (
     YOLOESegment,
     v10Detect,
 )
+from .physics_detect import PhysicsDetect
 from .transformer import (
     AIFI,
     MLP,
@@ -101,8 +102,6 @@ from .transformer import (
     TransformerEncoderLayer,
     TransformerLayer,
 )
-
-from .physics_detect import PhysicsDetect
 
 __all__ = (
     "AIFI",
@@ -162,6 +161,7 @@ __all__ = (
     "MLPBlock",
     "MSDeformAttn",
     "MaxSigmoidAttnBlock",
+    "PhysicsDetect",
     "Pose",
     "Proto",
     "RTDETRDecoder",
@@ -181,5 +181,4 @@ __all__ = (
     "YOLOEDetect",
     "YOLOESegment",
     "v10Detect",
-    "PhysicsDetect"
 )

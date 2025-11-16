@@ -1,11 +1,17 @@
+# Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
+
 # ultralytics/nn/modules/physics_detect.py
+from __future__ import annotations
+
+import copy
+import math
+
 import torch
 import torch.nn as nn
-import math, copy
 
-from .conv import Conv, DWConv
-from .block import DFL
 from ...utils.tal import dist2bbox, make_anchors
+from .block import DFL
+from .conv import Conv, DWConv
 
 
 class PhysicsDetect(nn.Module):
