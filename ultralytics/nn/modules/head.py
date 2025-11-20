@@ -22,6 +22,13 @@ from .utils import bias_init_with_prob, linear_init
 
 __all__ = "OBB", "Classify", "Detect", "Pose", "RTDETRDecoder", "Segment", "YOLOEDetect", "YOLOESegment", "v10Detect"
 
+class MobileVit_Headblock(nn.Module):
+    def __init__(self, c):
+        super().__init__()
+        from .mobilevit import  MobileViTBlock
+        self.mv = MobileViTBlock(dim=c, depth=2, kernel_size=3, patch_size=2)
+    def forward(self, x):
+        return self.mv(x)
 
 class Detect(nn.Module):
     """YOLO Detect head for object detection models.
@@ -105,6 +112,9 @@ class Detect(nn.Module):
                 for x in ch
             )
         )
+        self.attn = nn.ModuleList(
+            MobileVit_Headblock(x) for x in ch
+        )
         self.dfl = DFL(self.reg_max) if self.reg_max > 1 else nn.Identity()
 
         if self.end2end:
@@ -117,6 +127,7 @@ class Detect(nn.Module):
             return self.forward_end2end(x)
 
         for i in range(self.nl):
+            x[i] = self.attn[i](x[i])
             x[i] = torch.cat((self.cv2[i](x[i]), self.cv3[i](x[i])), 1)
         if self.training:  # Training path
             return x
@@ -135,9 +146,12 @@ class Detect(nn.Module):
         """
         x_detach = [xi.detach() for xi in x]
         one2one = [
-            torch.cat((self.one2one_cv2[i](x_detach[i]), self.one2one_cv3[i](x_detach[i])), 1) for i in range(self.nl)
+            torch.cat((self.one2one_cv2[i](self.attn[i](x_detach[i])),
+                       self.one2one_cv3[i](self.attn[i](x_detach[i]))), 1)
+            for i in range(self.nl)
         ]
         for i in range(self.nl):
+            x[i] = self.attn[i](x[i])
             x[i] = torch.cat((self.cv2[i](x[i]), self.cv3[i](x[i])), 1)
         if self.training:  # Training path
             return {"one2many": x, "one2one": one2one}
