@@ -18,7 +18,6 @@ class ChannelAttention(nn.Module):
         )
 
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
-        self.max_pool = nn.AdaptiveMaxPool2d(1)
 
         self.sigmoid = nn.Sigmoid()
 
@@ -27,7 +26,7 @@ class ChannelAttention(nn.Module):
 
         # Squeeze
         avg = self.avg_pool(x).view(b, c)
-        maxv = self.max_pool(x).view(b, c)
+        maxv = torch.amax(x, dim=(2,3))
 
         # Shared MLP
         avg_out = self.mlp(avg)
@@ -56,7 +55,7 @@ class SpatialAttention(nn.Module):
     def forward(self, x):
         # Channel-wise statistics
         avg = torch.mean(x, dim=1, keepdim=True)
-        maxv, _ = torch.max(x, dim=1, keepdim=True)
+        maxv = torch.amax(x, dim=1, keepdim=True)
 
         merged = torch.cat([avg, maxv], dim=1)
         out = self.conv(merged)
