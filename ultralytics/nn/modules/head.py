@@ -17,6 +17,7 @@ from ultralytics.utils.torch_utils import TORCH_1_11, fuse_conv_and_bn, smart_in
 
 from .block import DFL, SAVPE, BNContrastiveHead, ContrastiveHead, Proto, Residual, SwiGLUFFN
 from .conv import Conv, DWConv
+from .simam import SimAM
 from .transformer import MLP, DeformableTransformerDecoder, DeformableTransformerDecoderLayer
 from .utils import bias_init_with_prob, linear_init
 
@@ -105,6 +106,10 @@ class Detect(nn.Module):
                 for x in ch
             )
         )
+        self.attn = nn.ModuleList(
+            [SimAM() for _ in ch]
+        )
+        self.attn_alpha = 0.1
         self.dfl = DFL(self.reg_max) if self.reg_max > 1 else nn.Identity()
 
         if self.end2end:
@@ -117,7 +122,10 @@ class Detect(nn.Module):
             return self.forward_end2end(x)
 
         for i in range(self.nl):
-            x[i] = torch.cat((self.cv2[i](x[i]), self.cv3[i](x[i])), 1)
+            att = self.attn[i](x[i])  # SimAM output
+            xi = x[i] + self.attn_alpha * att  # residual blend
+            x[i] = torch.cat((self.cv2[i](xi), self.cv3[i](xi)), 1)
+
         if self.training:  # Training path
             return x
         y = self._inference(x)
