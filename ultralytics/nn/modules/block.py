@@ -55,6 +55,8 @@ __all__ = (
     "TorchVision",
 )
 
+from ...utils import LOGGER
+
 
 class DFL(nn.Module):
     """Integral module of Distribution Focal Loss (DFL).
@@ -335,10 +337,9 @@ class C3(nn.Module):
         self.cv2 = Conv(c1, c_, 1, 1)
         self.cv3 = Conv(2 * c_, c2, 1)  # optional act=FReLU(c2)
         self.m = nn.Sequential(*(Bottleneck(c_, c_, shortcut, g, k=((1, 1), (3, 3)), e=1.0) for _ in range(n)))
-        self.simam = SimAM()
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass through the CSP bottleneck with 3 convolutions."""
-        return self.simam(self.cv3(torch.cat((self.m(self.cv1(x)), self.cv2(x)), 1)))
+        return self.cv3(torch.cat((self.m(self.cv1(x)), self.cv2(x)), 1))
 
 
 class C3x(C3):
@@ -1836,6 +1837,46 @@ class A2C2f(nn.Module):
             (torch.Tensor): Output tensor after processing.
         """
         y = [self.cv1(x)]
+        y.extend(m(y[-1]) for m in self.m)
+        y = self.cv2(torch.cat(y, 1))
+        if self.gamma is not None:
+            return x + self.gamma.view(-1, self.gamma.shape[0], 1, 1) * y
+        return y
+
+class A2C2fSimAM(nn.Module):
+
+    def __init__(
+        self,
+        c1: int,
+        c2: int,
+        n: int = 1,
+        a2: bool = True,
+        area: int = 1,
+        residual: bool = False,
+        mlp_ratio: float = 2.0,
+        e: float = 0.5,
+        g: int = 1,
+        shortcut: bool = True,
+    ):
+        super().__init__()
+        c_ = int(c2 * e)  # hidden channels
+        assert c_ % 32 == 0, "Dimension of ABlock be a multiple of 32."
+
+        self.cv1 = Conv(c1, c_, 1, 1)
+        self.simam = SimAM()
+        self.cv2 = Conv((1 + n) * c_, c2, 1)
+
+        self.gamma = nn.Parameter(0.01 * torch.ones(c2), requires_grad=True) if a2 and residual else None
+        self.m = nn.ModuleList(
+            nn.Sequential(*(ABlock(c_, c_ // 32, mlp_ratio, area) for _ in range(2)))
+            if a2
+            else C3k(c_, c_, 2, shortcut, g)
+            for _ in range(n)
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        y = [self.cv1(x)]
+        y[0] = self.simam(y[0])
         y.extend(m(y[-1]) for m in self.m)
         y = self.cv2(torch.cat(y, 1))
         if self.gamma is not None:
