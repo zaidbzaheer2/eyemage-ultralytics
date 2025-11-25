@@ -2,3 +2,4 @@ main.py
 **/__pycache__/
 .venv
 .idea
+runs
