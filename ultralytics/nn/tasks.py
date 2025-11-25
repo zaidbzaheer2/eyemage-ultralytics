@@ -25,7 +25,7 @@ from ultralytics.nn.modules import (
     SPPELAN,
     SPPF,
     A2C2f,
-    A2C2fSimAMConservative,
+    A2C2fSimAMIntermediate,
     AConv,
     ADown,
     Bottleneck,
@@ -1554,7 +1554,7 @@ def parse_model(d, ch, verbose=True):
             SCDown,
             C2fCIB,
             A2C2f,
-            A2C2fSimAMConservative
+            A2C2fSimAMIntermediate
         }
     )
     repeat_modules = frozenset(  # modules with 'repeat' arguments
@@ -1574,7 +1574,7 @@ def parse_model(d, ch, verbose=True):
             C2fCIB,
             C2PSA,
             A2C2f,
-            A2C2fSimAMConservative
+            A2C2fSimAMIntermediate
         }
     )
     for i, (f, n, m, args) in enumerate(d["backbone"] + d["head"]):  # from, number, module, args
@@ -1606,7 +1606,7 @@ def parse_model(d, ch, verbose=True):
                 legacy = False
                 if scale in "mlx":
                     args[3] = True
-            if m is A2C2fSimAMConservative:  # Add this block
+            if m is A2C2fSimAMIntermediate:  # Add this block
                 legacy = False
                 if scale in "lx":  # for L/X sizes
                     args.extend((True, 1.2))

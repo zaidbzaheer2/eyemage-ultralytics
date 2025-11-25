@@ -1844,8 +1844,8 @@ class A2C2f(nn.Module):
         return y
 
 
-class A2C2fSimAMConservative(nn.Module):
-    """Strategy 1: Apply SimAM after all blocks (most conservative)"""
+class A2C2fSimAMIntermediate(nn.Module):
+    """Strategy 2: Apply SimAM only to intermediate features"""
 
     def __init__(
             self,
@@ -1862,14 +1862,12 @@ class A2C2fSimAMConservative(nn.Module):
     ):
         super().__init__()
         c_ = int(c2 * e)
-        # Remove strict assertion, use warning instead
         if c_ % 32 != 0 and a2:
-            print(f"Warning: c_={c_} is not divisible by 32, adjusting to {(c_ // 32 + 1) * 32}")
             c_ = (c_ // 32 + 1) * 32
 
         self.cv1 = Conv(c1, c_, 1, 1)
         self.cv2 = Conv((1 + n) * c_, c2, 1)
-        self.simam = SimAM()  # Apply after concatenation
+        self.simam = SimAM()
 
         self.gamma = nn.Parameter(0.01 * torch.ones(c2), requires_grad=True) if a2 and residual else None
         self.m = nn.ModuleList(
@@ -1881,10 +1879,14 @@ class A2C2fSimAMConservative(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         y = [self.cv1(x)]
-        y.extend(m(y[-1]) for m in self.m)
-        y = torch.cat(y, 1)
-        y = self.simam(y)  # Apply SimAM after concatenation
-        y = self.cv2(y)
+
+        # Apply SimAM to each block's output
+        for m in self.m:
+            feat = m(y[-1])
+            feat = self.simam(feat)
+            y.append(feat)
+
+        y = self.cv2(torch.cat(y, 1))
 
         if self.gamma is not None:
             return x + self.gamma.view(-1, self.gamma.shape[0], 1, 1) * y
