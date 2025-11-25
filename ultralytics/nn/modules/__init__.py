@@ -19,6 +19,7 @@ Examples:
 
 from .block import (
     C1,
+    EMA,
     C2,
     C2PSA,
     C3,
@@ -105,6 +106,7 @@ from .transformer import (
 __all__ = (
     "AIFI",
     "C1",
+    "EMA",
     "C2",
     "C2PSA",
     "C3",
