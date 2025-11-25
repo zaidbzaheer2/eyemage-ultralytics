@@ -1843,28 +1843,33 @@ class A2C2f(nn.Module):
             return x + self.gamma.view(-1, self.gamma.shape[0], 1, 1) * y
         return y
 
-class A2C2fSimAM(nn.Module):
+
+class A2C2fSimAMConservative(nn.Module):
+    """Strategy 1: Apply SimAM after all blocks (most conservative)"""
 
     def __init__(
-        self,
-        c1: int,
-        c2: int,
-        n: int = 1,
-        a2: bool = True,
-        area: int = 1,
-        residual: bool = False,
-        mlp_ratio: float = 2.0,
-        e: float = 0.5,
-        g: int = 1,
-        shortcut: bool = True,
+            self,
+            c1: int,
+            c2: int,
+            n: int = 1,
+            a2: bool = True,
+            area: int = 1,
+            residual: bool = False,
+            mlp_ratio: float = 2.0,
+            e: float = 0.5,
+            g: int = 1,
+            shortcut: bool = True,
     ):
         super().__init__()
-        c_ = int(c2 * e)  # hidden channels
-        assert c_ % 32 == 0, "Dimension of ABlock be a multiple of 32."
+        c_ = int(c2 * e)
+        # Remove strict assertion, use warning instead
+        if c_ % 32 != 0 and a2:
+            print(f"Warning: c_={c_} is not divisible by 32, adjusting to {(c_ // 32 + 1) * 32}")
+            c_ = (c_ // 32 + 1) * 32
 
         self.cv1 = Conv(c1, c_, 1, 1)
-        self.simam = SimAM()
         self.cv2 = Conv((1 + n) * c_, c2, 1)
+        self.simam = SimAM()  # Apply after concatenation
 
         self.gamma = nn.Parameter(0.01 * torch.ones(c2), requires_grad=True) if a2 and residual else None
         self.m = nn.ModuleList(
@@ -1876,9 +1881,11 @@ class A2C2fSimAM(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         y = [self.cv1(x)]
-        y[0] = self.simam(y[0])
         y.extend(m(y[-1]) for m in self.m)
-        y = self.cv2(torch.cat(y, 1))
+        y = torch.cat(y, 1)
+        y = self.simam(y)  # Apply SimAM after concatenation
+        y = self.cv2(y)
+
         if self.gamma is not None:
             return x + self.gamma.view(-1, self.gamma.shape[0], 1, 1) * y
         return y
