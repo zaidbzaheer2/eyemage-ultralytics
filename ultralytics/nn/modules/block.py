@@ -52,77 +52,24 @@ __all__ = (
     "ResNetLayer",
     "SCDown",
     "TorchVision",
+    "LightResBlock"
 )
 
-class EMA(nn.Module):
-    """
-    Efficient Multi-Scale Attention Module
-
-    Paper: "Efficient Multi-Scale Attention Module with Cross-Spatial Learning"
-
-    Key Features:
-    - Parallel 1D convolutions for horizontal and vertical direction encoding
-    - Cross-spatial aggregation for global context
-    - Preserves spatial information without dimensionality reduction
-    - Minimal computational overhead
-
-    Args:
-        channels: Number of input channels
-        factor: Reduction factor for grouped convolution (default: 8)
-
-    Usage in YOLO12:
-        backbone:
-          - [-1, 4, A2C2f, [512, True, 4]]
-          - [-1, 1, EMA, [512]]  # Add here at end of backbone
-          - [-1, 1, Conv, [1024, 3, 2]]
-    """
-
-    def __init__(self, channels, factor=8, *args, **kwargs):
-        super(EMA, self).__init__()
-        self.groups = factor
-        assert channels % self.groups == 0, f"channels {channels} must be divisible by factor {factor}"
-
-        self.softmax = nn.Softmax(dim=-1)
-        self.agp = nn.AdaptiveAvgPool2d((1, 1))
-        self.pool_h = nn.AdaptiveAvgPool2d((None, 1))
-        self.pool_w = nn.AdaptiveAvgPool2d((1, None))
-        self.gn = nn.GroupNorm(channels // self.groups, channels // self.groups)
-
-        self.conv1x1 = Conv(channels, channels, k=1, s=1, p=0)
-        self.conv3x3 = Conv(channels, channels, k=3, s=1, p=1)
-
-        self.sigmoid = nn.Sigmoid()
+class LightResBlock(nn.Module):
+    def __init__(self, c, *args, **kwargs):
+        super().__init__()
+        self.dw = nn.Conv2d(c, c, 3, 1, 1, groups=c, bias=False)
+        self.pw = nn.Conv2d(c, c, 1, 1, 0, bias=False)
+        self.bn1 = nn.BatchNorm2d(c)
+        self.bn2 = nn.BatchNorm2d(c)
+        self.act = nn.SiLU()
 
     def forward(self, x):
-        b, c, h, w = x.size()
-        group_x = x.reshape(b * self.groups, -1, h, w)  # (b*g, c//g, h, w)
+        y = self.act(self.bn1(self.dw(x)))
+        y = self.bn2(self.pw(y))
+        return self.act(y + x)
 
-        # Parallel encoding for horizontal and vertical directions
-        x_h = self.pool_h(group_x)  # (b*g, c//g, h, 1)
-        x_w = self.pool_w(group_x).permute(0, 1, 3, 2)  # (b*g, c//g, w, 1)
 
-        # Concatenate and apply group normalization
-        hw = torch.cat([x_h, x_w], dim=2)  # (b*g, c//g, h+w, 1)
-        x_group = self.gn(hw)
-
-        # Split back to height and width
-        x_h, x_w = torch.split(x_group, [h, w], dim=2)
-        x_w = x_w.permute(0, 1, 3, 2)
-
-        # Cross-spatial attention
-        a_h = self.sigmoid(x_h)  # (b*g, c//g, h, 1)
-        a_w = self.sigmoid(x_w)  # (b*g, c//g, 1, w)
-
-        # Apply attention weights
-        out = group_x * a_h * a_w  # (b*g, c//g, h, w)
-        out = out.reshape(b, c, h, w)
-
-        # Multi-scale feature fusion
-        x1 = self.conv1x1(x)
-        x2 = self.conv3x3(x)
-        out = out + x1 + x2
-
-        return out
 
 class DFL(nn.Module):
     """Integral module of Distribution Focal Loss (DFL).
