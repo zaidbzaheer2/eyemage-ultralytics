@@ -55,19 +55,55 @@ __all__ = (
     "LightResBlock"
 )
 
+
 class LightResBlock(nn.Module):
-    def __init__(self, c, *args, **kwargs):
+    """
+    Inverted-residual style Light block.
+    c: input/output channels
+    expand: expansion factor for the hidden channels (e.g. 2 or 3)
+    use_se: whether to use a tiny SE module (optional)
+    """
+    def __init__(self, c1, c2=None, n=1, shortcut=True, e=2.0, *args, **kwargs):
         super().__init__()
-        self.dw = nn.Conv2d(c, c, 3, 1, 1, groups=c, bias=False)
-        self.pw = nn.Conv2d(c, c, 1, 1, 0, bias=False)
-        self.bn1 = nn.BatchNorm2d(c)
-        self.bn2 = nn.BatchNorm2d(c)
+        c = c1
+        hidden = int(c * e)
+        self.use_res = True  # keep residual
+        layers = []
+        # 1x1 expand
+        layers += [
+            nn.Conv2d(c, hidden, kernel_size=1, stride=1, padding=0, bias=False),
+            nn.BatchNorm2d(hidden),
+            nn.SiLU()
+        ]
+        # 3x3 depthwise
+        layers += [
+            nn.Conv2d(hidden, hidden, kernel_size=3, stride=1, padding=1, groups=hidden, bias=False),
+            nn.BatchNorm2d(hidden),
+            nn.SiLU()
+        ]
+        # project
+        layers += [
+            nn.Conv2d(hidden, c, kernel_size=1, stride=1, padding=0, bias=False),
+            nn.BatchNorm2d(c)
+        ]
+        self.conv = nn.Sequential(*layers)
         self.act = nn.SiLU()
+        self.use_se = shortcut
+        if shortcut:
+            # tiny SE: reduction fixed to 4 (cheap)
+            self.se = nn.Sequential(
+                nn.AdaptiveAvgPool2d(1),
+                nn.Conv2d(c, max(1, c//4), 1, 1, 0),
+                nn.SiLU(),
+                nn.Conv2d(max(1, c//4), c, 1, 1, 0),
+                nn.Sigmoid()
+            )
 
     def forward(self, x):
-        y = self.act(self.bn1(self.dw(x)))
-        y = self.bn2(self.pw(y))
-        return self.act(y + x)
+        y = self.conv(x)
+        if self.use_se:
+            y = y * self.se(y)
+        return self.act(x + y) if self.use_res else self.act(y)
 
 
 
