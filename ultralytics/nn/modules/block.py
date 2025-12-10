@@ -13,6 +13,7 @@ from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, autopad
 from .transformer import TransformerBlock
 
 __all__ = (
+    "LightResBlock"
     "C1",
     "C2",
     "C2PSA",
@@ -54,6 +55,20 @@ __all__ = (
     "TorchVision",
 )
 
+class LightResBlock(nn.Module):
+    def __init__(self, c, *args, **kwargs):
+        super().__init__()
+        self.dw = nn.Conv2d(c, c, 3, 1, 1, groups=c, bias=False)
+        self.pw = nn.Conv2d(c, c, 1, 1, 0, bias=False)
+        self.bn1 = nn.BatchNorm2d(c)
+        self.bn2 = nn.BatchNorm2d(c)
+        self.act = nn.SiLU()
+
+    def forward(self, x):
+        y = self.act(self.bn1(self.dw(x)))
+        y = self.bn2(self.pw(y))
+        return self.act(y + x)
+
 class EMA(nn.Module):
     """
     Efficient Multi-Scale Attention Module
@@ -77,7 +92,7 @@ class EMA(nn.Module):
           - [-1, 1, Conv, [1024, 3, 2]]
     """
 
-    def __init__(self, channels, factor=8, *args, **kwargs):
+    def __init__(self, channels, factor=32, *args, **kwargs):
         super(EMA, self).__init__()
         self.groups = factor
         assert channels % self.groups == 0, f"channels {channels} must be divisible by factor {factor}"
@@ -88,8 +103,8 @@ class EMA(nn.Module):
         self.pool_w = nn.AdaptiveAvgPool2d((1, None))
         self.gn = nn.GroupNorm(channels // self.groups, channels // self.groups)
 
-        self.conv1x1 = Conv(channels, channels, k=1, s=1, p=0)
-        self.conv3x3 = Conv(channels, channels, k=3, s=1, p=1)
+        self.conv1x1 = GhostConv(channels, channels, k=1, s=1)
+        self.conv3x3 = DWConv(channels, channels, k=3, s=1)
 
         self.sigmoid = nn.Sigmoid()
 

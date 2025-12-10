@@ -18,6 +18,7 @@ Examples:
 """
 
 from .block import (
+    LightResBlock,
     C1,
     EMA,
     C2,
@@ -104,6 +105,7 @@ from .transformer import (
 )
 
 __all__ = (
+    "LightResBlock",
     "AIFI",
     "C1",
     "EMA",
