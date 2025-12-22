@@ -52,7 +52,173 @@ __all__ = (
     "ResNetLayer",
     "SCDown",
     "TorchVision",
+    "TripletAttention",
+    "TFE"
 )
+
+class TripletAttention(nn.Module):
+    """
+    Triplet Attention module from TFP-YOLO paper.
+    Captures cross-dimension interactions: H-C, W-C, and spatial (H-W).
+    No channel reduction - preserves input channels.
+    """
+
+    def __init__(self, c1, kernel_size=7):
+        super().__init__()
+        self.c1 = c1
+        p = kernel_size // 2
+
+        # Each branch outputs attention weights (single channel)
+        # Conv takes 2 channels (from Z-Pool) and outputs 1 channel (attention map)
+        self.conv_h = nn.Sequential(
+            nn.Conv2d(2, 1, kernel_size, padding=p, bias=False),
+            nn.BatchNorm2d(1),
+            nn.Sigmoid()
+        )
+
+        self.conv_w = nn.Sequential(
+            nn.Conv2d(2, 1, kernel_size, padding=p, bias=False),
+            nn.BatchNorm2d(1),
+            nn.Sigmoid()
+        )
+
+        self.conv_c = nn.Sequential(
+            nn.Conv2d(2, 1, kernel_size, padding=p, bias=False),
+            nn.BatchNorm2d(1),
+            nn.Sigmoid()
+        )
+
+    def z_pool(self, x):
+        """Z-Pool: concatenate max and avg pooling along channel dimension."""
+        return torch.cat(
+            [x.max(dim=1, keepdim=True)[0],
+             x.mean(dim=1, keepdim=True)],
+            dim=1
+        )  # Output: (B, 2, H, W)
+
+    def forward(self, x):
+        """
+        Args:
+            x: Input tensor (B, C, H, W)
+        Returns:
+            Output tensor (B, C, H, W) - same shape as input
+        """
+        B, C, H, W = x.shape
+
+        # ----- Branch 1: H-C attention -----
+        # Rotate to (B, H, C, W) to capture Height-Channel interactions
+        x_h = x.permute(0, 2, 1, 3)  # (B, H, C, W)
+        z_h = self.z_pool(x_h)  # (B, 2, C, W) - pool along H dimension
+        a_h = self.conv_h(z_h)  # (B, 1, C, W) - attention weights
+        x_h = x_h * a_h  # Apply attention
+        x_h = x_h.permute(0, 2, 1, 3)  # Back to (B, C, H, W)
+
+        # ----- Branch 2: W-C attention -----
+        # Rotate to (B, W, C, H) to capture Width-Channel interactions
+        x_w = x.permute(0, 3, 2, 1)  # (B, W, H, C)
+        x_w = x_w.permute(0, 1, 3, 2)  # (B, W, C, H)
+        z_w = self.z_pool(x_w)  # (B, 2, C, H) - pool along W dimension
+        a_w = self.conv_w(z_w)  # (B, 1, C, H) - attention weights
+        x_w = x_w * a_w  # Apply attention
+        x_w = x_w.permute(0, 2, 3, 1)  # Back to (B, C, H, W)
+
+        # ----- Branch 3: Spatial (H-W) attention -----
+        z_c = self.z_pool(x)  # (B, 2, H, W) - pool along C dimension
+        a_c = self.conv_c(z_c)  # (B, 1, H, W) - attention weights
+        x_c = x * a_c  # Apply attention
+
+        # Average the three attention-weighted branches
+        out = (x_h + x_w + x_c) / 3.0
+
+        return out
+
+
+class TFE(nn.Module):
+    """
+    Triple Feature Encoding (TFE) module from TFP-YOLO paper.
+    Fuses three feature maps at different scales by:
+    1. Aligning them to medium resolution
+    2. Concatenating along channel dimension
+
+    Args:
+        nc: Number of classes (not used in TFE itself, kept for compatibility)
+    """
+
+    def __init__(self, nc=80):
+        super().__init__()
+        # TFE is a pure fusion module - no learnable parameters
+        # Just alignment + concatenation
+
+    def forward(self, features):
+        """
+        Args:
+            features: List of [f_small, f_medium, f_large]
+                     f_small: High-res shallow features (e.g., P2: 160x160)
+                     f_medium: Mid-res features (e.g., P3: 80x80)
+                     f_large: Low-res deep features (e.g., P5: 20x20)
+
+        Returns:
+            Fused features at medium resolution with concatenated channels
+        """
+        if isinstance(features, (list, tuple)) and len(features) == 3:
+            f_small, f_medium, f_large = features
+        else:
+            raise ValueError(f"TFE expects 3 inputs, got {len(features) if isinstance(features, (list, tuple)) else 1}")
+
+        # Get target resolution from medium feature map
+        target_size = f_medium.shape[2:]
+
+        # Align all features to medium resolution
+        # Downsample high-res (small) features
+        if f_small.shape[2:] != target_size:
+            f_small_aligned = F.interpolate(
+                f_small,
+                size=target_size,
+                mode='bilinear',
+                align_corners=False
+            )
+        else:
+            f_small_aligned = f_small
+
+        # Upsample low-res (large) features
+        if f_large.shape[2:] != target_size:
+            f_large_aligned = F.interpolate(
+                f_large,
+                size=target_size,
+                mode='nearest'
+            )
+        else:
+            f_large_aligned = f_large
+
+        # Concatenate along channel dimension
+        # Output channels = C_small + C_medium + C_large
+        fused = torch.cat([f_small_aligned, f_medium, f_large_aligned], dim=1)
+
+        return fused
+
+
+# Optional: Add P2 detection head helper (if needed as separate module)
+class P2Head(nn.Module):
+    """
+    P2 detection head for tiny object detection.
+    Upsamples from P3 and concatenates with P2 backbone features.
+    """
+
+    def __init__(self, c1, c2):
+        super().__init__()
+        self.upsample = nn.Upsample(scale_factor=2, mode='nearest')
+        # Additional convs can be added here if needed
+
+    def forward(self, x_p3, x_p2_backbone):
+        """
+        Args:
+            x_p3: Features from P3 head (80x80)
+            x_p2_backbone: Features from P2 backbone (160x160)
+        Returns:
+            Concatenated features at P2 resolution
+        """
+        x_up = self.upsample(x_p3)
+        return torch.cat([x_up, x_p2_backbone], dim=1)
 
 class DFL(nn.Module):
     """Integral module of Distribution Focal Loss (DFL).

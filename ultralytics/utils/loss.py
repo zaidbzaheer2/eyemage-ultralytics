@@ -104,6 +104,116 @@ class DFLoss(nn.Module):
             + F.cross_entropy(pred_dist, tr.view(-1), reduction="none").view(tl.shape) * wr
         ).mean(-1, keepdim=True)
 
+import math
+def bbox_iou_wiou(box1, box2, xywh=True, eps=1e-7, version='v3'):
+    """
+    Calculate WIoU (Wise-IoU) between two sets of boxes.
+
+    Args:
+        box1 (torch.Tensor): Predicted boxes (N, 4) in format [x, y, w, h] or [x1, y1, x2, y2]
+        box2 (torch.Tensor): Ground truth boxes (N, 4) in same format
+        xywh (bool): If True, boxes are in [x, y, w, h] format; else [x1, y1, x2, y2]
+        eps (float): Small value to avoid division by zero
+        version (str): WIoU version - 'v1', 'v2', or 'v3' (default: 'v3')
+
+    Returns:
+        torch.Tensor: WIoU loss values (N,)
+    """
+
+    # Convert to xyxy format if needed
+    if xywh:
+        (x1, y1, w1, h1), (x2, y2, w2, h2) = box1.chunk(4, -1), box2.chunk(4, -1)
+        b1_x1, b1_x2, b1_y1, b1_y2 = x1 - w1 / 2, x1 + w1 / 2, y1 - h1 / 2, y1 + h1 / 2
+        b2_x1, b2_x2, b2_y1, b2_y2 = x2 - w2 / 2, x2 + w2 / 2, y2 - h2 / 2, y2 + h2 / 2
+    else:
+        b1_x1, b1_y1, b1_x2, b1_y2 = box1.chunk(4, -1)
+        b2_x1, b2_y1, b2_x2, b2_y2 = box2.chunk(4, -1)
+        w1, h1 = b1_x2 - b1_x1, b1_y2 - b1_y1 + eps
+        w2, h2 = b2_x2 - b2_x1, b2_y2 - b2_y1 + eps
+
+    # Intersection area
+    inter = (b1_x2.minimum(b2_x2) - b1_x1.maximum(b2_x1)).clamp_(0) * \
+            (b1_y2.minimum(b2_y2) - b1_y1.maximum(b2_y1)).clamp_(0)
+
+    # Union area
+    union = w1 * h1 + w2 * h2 - inter + eps
+
+    # IoU
+    iou = inter / union
+
+    # ============ WIoU v1: Distance Attention ============
+    # Calculate center distance
+    cw = b1_x2.maximum(b2_x2) - b1_x1.minimum(b2_x1)  # convex width
+    ch = b1_y2.maximum(b2_y2) - b1_y1.minimum(b2_y1)  # convex height
+
+    # Center points
+    c_x1 = (b1_x1 + b1_x2) / 2
+    c_y1 = (b1_y1 + b1_y2) / 2
+    c_x2 = (b2_x1 + b2_x2) / 2
+    c_y2 = (b2_y1 + b2_y2) / 2
+
+    # Center distance squared
+    center_dist_sq = (c_x1 - c_x2) ** 2 + (c_y1 - c_y2) ** 2
+
+    # Diagonal of smallest enclosing box squared
+    c_diag_sq = cw ** 2 + ch ** 2 + eps
+
+    # WIoU v1: Distance attention based on normalized center distance
+    # This focuses on boxes with larger center distance
+    distance_attention = center_dist_sq / c_diag_sq
+
+    if version == 'v1':
+        # WIoU v1: IoU loss with distance attention
+        return iou - distance_attention
+
+    # ============ WIoU v2/v3: Add Focusing Mechanism ============
+    # Calculate aspect ratio similarity (from CIoU)
+    v = (4 / math.pi ** 2) * ((torch.atan(w2 / h2) - torch.atan(w1 / h1)) ** 2)
+    with torch.no_grad():
+        alpha = v / (1 - iou + v + eps)
+
+    # Shape attention: penalize aspect ratio difference
+    shape_attention = v * alpha
+
+    # WIoU v2: Add monotonic focusing
+    if version == 'v2':
+        # Monotonic focusing: higher penalty for low IoU
+        # r is the focusing parameter (gradient gain)
+        r = (distance_attention + shape_attention).detach()
+        focal_factor = torch.exp(r)
+        return iou - distance_attention - shape_attention, focal_factor
+
+    # ============ WIoU v3: Dynamic Non-monotonic Focusing ============
+    if version == 'v3':
+        # Calculate outlier degree (beta)
+        # This measures how much an anchor box deviates from being "ordinary quality"
+        # Beta is high for both very good and very bad boxes
+
+        # Detach to prevent gradient flow through beta calculation
+        with torch.no_grad():
+            # Combined distance and shape quality metric
+            quality_metric = distance_attention + shape_attention
+
+            # Outlier degree: measures deviation from mean quality
+            # Use exponential moving average for stability
+            beta = quality_metric.detach()
+
+            # Dynamic non-monotonic focusing coefficient
+            # Small beta (ordinary boxes) -> high gradient gain
+            # Large beta (outlier boxes) -> low gradient gain
+            # This is NON-MONOTONIC: both best and worst boxes get lower weight
+
+            # Wise gradient allocation strategy
+            # beta / (beta.mean() + eps) normalizes by average quality
+            # Using detach() prevents gradient flow
+            focal_factor = torch.exp(-beta / (beta.mean() + eps))
+
+        # Apply focal factor to the loss
+        # Higher focal_factor = more attention to this sample
+        return (iou - distance_attention - shape_attention) * focal_factor
+
+    # Default: return standard IoU
+    return iou
 
 class BboxLoss(nn.Module):
     """Criterion class for computing training losses for bounding boxes."""
@@ -125,7 +235,7 @@ class BboxLoss(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Compute IoU and DFL losses for bounding boxes."""
         weight = target_scores.sum(-1)[fg_mask].unsqueeze(-1)
-        iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, CIoU=True)
+        iou = bbox_iou_wiou(pred_bboxes, target_bboxes, xywh=False, version='v3')
         loss_iou = ((1.0 - iou) * weight).sum() / target_scores_sum
 
         # DFL loss

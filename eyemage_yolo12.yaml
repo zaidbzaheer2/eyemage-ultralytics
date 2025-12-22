@@ -1,48 +1,74 @@
 # Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
 
-# YOLO12 object detection model with P3/8 - P5/32 outputs
-# Model docs: https://docs.ultralytics.com/models/yolo12
-# Task docs: https://docs.ultralytics.com/tasks/detect
+# YOLO12-TFP object detection model with P2-P3-P4-P5 outputs
+# Inspired by TFP-YOLO paper enhancements:
+# - Triplet Attention after backbone
+# - TFE (Triple Feature Encoding) for multi-scale fusion
+# - P2 head for tiny object detection
+# - WIoU v3 applied during training (not in architecture)
 
 # Parameters
 nc: 80 # number of classes
-scales: # model compound scaling constants, i.e. 'model=yolo12n.yaml' will call yolo12.yaml with scale 'n'
+scales: # model compound scaling constants
   # [depth, width, max_channels]
-  n: [0.50, 0.25, 1024] # summary: 272 layers, 2,602,288 parameters, 2,602,272 gradients, 6.7 GFLOPs
-  s: [0.50, 0.50, 1024] # summary: 272 layers, 9,284,096 parameters, 9,284,080 gradients, 21.7 GFLOPs
-  m: [0.50, 1.00, 512] # summary: 292 layers, 20,199,168 parameters, 20,199,152 gradients, 68.1 GFLOPs
-  l: [1.00, 1.00, 512] # summary: 488 layers, 26,450,784 parameters, 26,450,768 gradients, 89.7 GFLOPs
-  x: [1.00, 1.50, 512] # summary: 488 layers, 59,210,784 parameters, 59,210,768 gradients, 200.3 GFLOPs
+  n: [0.50, 0.25, 1024]
+  s: [0.50, 0.50, 1024]
+  m: [0.50, 1.00, 512]
+  l: [1.00, 1.00, 512]
+  x: [1.00, 1.50, 512]
 
-# YOLO12n backbone
+# Backbone - YOLO12 base with Triplet Attention at end
 backbone:
   # [from, repeats, module, args]
-  - [-1, 1, Conv, [64, 3, 2]] # 0-P1/2
-  - [-1, 1, Conv, [128, 3, 2]] # 1-P2/4
-  - [-1, 2, C3k2, [256, False, 0.25]]
-  - [-1, 1, Conv, [256, 3, 2]] # 3-P3/8
-  - [-1, 2, C3k2, [512, False, 0.25]]
-  - [-1, 1, Conv, [512, 3, 2]] # 5-P4/16
-  - [-1, 4, A2C2f, [512, True, 4]]
-  - [-1, 1, Conv, [1024, 3, 2]] # 7-P5/32
-  - [-1, 4, A2C2f, [1024, True, 1]] # 8
+  - [-1, 1, Conv, [64, 3, 2]]         # 0-P1/2
+  - [-1, 1, Conv, [128, 3, 2]]        # 1-P2/4  (160x160 @ 640 input)
+  - [-1, 2, C3k2, [256, False, 0.25]] # 2
+  - [-1, 1, Conv, [256, 3, 2]]        # 3-P3/8  (80x80)
+  - [-1, 2, C3k2, [512, False, 0.25]] # 4
+  - [-1, 1, Conv, [512, 3, 2]]        # 5-P4/16 (40x40)
+  - [-1, 4, A2C2f, [512, True, 4]]    # 6
+  - [-1, 1, Conv, [1024, 3, 2]]       # 7-P5/32 (20x20)
+  - [-1, 4, A2C2f, [1024, True, 1]]   # 8-P5 features
+  - [-1, 1, TripletAttention, [7]]    # 9-TA applied to P5 (kernel_size=7)
 
-# YOLO12n head
+# Head - Modified with P2 head and TFE fusion
 head:
-  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
-  - [[-1, 6], 1, Concat, [1]] # cat backbone P4
-  - [-1, 2, A2C2f, [512, False, -1]] # 11
+  # ===== Upsampling Path =====
+  # P5 → P4
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]  # 10: upsample P5
+  - [[-1, 6], 1, Concat, [1]]                   # 11: concat with backbone P4
+  - [-1, 2, A2C2f, [512, False]]                # 12: P4 head features
 
-  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
-  - [[-1, 4], 1, Concat, [1]] # cat backbone P3
-  - [-1, 2, A2C2f, [256, False, -1]] # 14
+  # P4 → P3
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]  # 13: upsample P4
+  - [[-1, 4], 1, Concat, [1]]                   # 14: concat with backbone P3
+  - [-1, 2, A2C2f, [256, False]]                # 15: P3 head features
 
-  - [-1, 1, Conv, [256, 3, 2]]
-  - [[-1, 11], 1, Concat, [1]] # cat head P4
-  - [-1, 2, A2C2f, [512, False, -1]] # 17
+  # P3 → P2 (NEW: for tiny objects)
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]  # 16: upsample P3
+  - [[-1, 1], 1, Concat, [1]]                   # 17: concat with backbone P2
+  - [-1, 2, A2C2f, [128, False]]                # 18: P2 head features (160x160)
 
-  - [-1, 1, Conv, [512, 3, 2]]
-  - [[-1, 8], 1, Concat, [1]] # cat head P5
-  - [-1, 2, C3k2, [1024, True]] # 20 (P5/32-large)
+  # ===== Downsampling Path =====
+  # P2 → P3
+  - [-1, 1, Conv, [128, 3, 2]]                  # 19: downsample P2
+  - [[-1, 15], 1, Concat, [1]]                  # 20: concat with P3 head
+  - [-1, 2, A2C2f, [256, False]]                # 21: refined P3
 
-  - [[14, 17, 20], 1, Detect, [nc]] # Detect(P3, P4, P5)
+  # P3 → P4
+  - [-1, 1, Conv, [256, 3, 2]]                  # 22: downsample P3
+  - [[-1, 12], 1, Concat, [1]]                  # 23: concat with P4 head
+  - [-1, 2, A2C2f, [512, False]]                # 24: refined P4
+
+  # P4 → P5
+  - [-1, 1, Conv, [512, 3, 2]]                  # 25: downsample P4
+  - [[-1, 9], 1, Concat, [1]]                   # 26: concat with backbone P5 (after TA)
+  - [-1, 2, C3k2, [1024, True]]                 # 27: refined P5
+  - [[18, 21, 27], 1, TFE, []]
+
+  # ===== Optional: TFE Fusion (Multi-scale Feature Enhancement) =====
+  # Uncomment to enable TFE - fuses P2, P3, P5 features
+  # Note: This creates an additional fused feature map but doesn't replace detection heads
+
+  # ===== Detection Heads: P2, P3, P4, P5 =====
+  - [[18, 21, 24, 27], 1, Detect, [nc]]         # 28 (or 29 with TFE): Detect on 4 scales
