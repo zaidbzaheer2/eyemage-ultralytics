@@ -195,23 +195,20 @@ class BboxLoss(nn.Module):
         self.dfl_loss = DFLoss(reg_max) if reg_max > 1 else None
 
     def forward(
-        self,
-        pred_dist: torch.Tensor,
-        pred_bboxes: torch.Tensor,
-        anchor_points: torch.Tensor,
-        target_bboxes: torch.Tensor,
-        target_scores: torch.Tensor,
-        target_scores_sum: torch.Tensor,
-        fg_mask: torch.Tensor,
+            self,
+            pred_dist: torch.Tensor,
+            pred_bboxes: torch.Tensor,
+            anchor_points: torch.Tensor,
+            target_bboxes: torch.Tensor,
+            target_scores: torch.Tensor,
+            target_scores_sum: torch.Tensor,
+            fg_mask: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Compute IoU and DFL losses for bounding boxes."""
         weight = target_scores.sum(-1)[fg_mask].unsqueeze(-1)
-        print(f"pred_bboxes shape: {pred_bboxes.shape}")
-        print(f"target_bboxes shape: {target_bboxes.shape}")
-        print(f"fg_mask sum: {fg_mask.sum()}")
-        print(f"pred_bboxes[fg_mask] shape: {pred_bboxes[fg_mask].shape}")
-        print(f"target_bboxes[fg_mask] shape: {target_bboxes[fg_mask].shape}")
-        iou = bbox_iou_wiou(pred_bboxes, target_bboxes, xywh=False, version='v3')
+
+        # Filter first, then compute IoU
+        iou = bbox_iou_wiou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, version='v3')
         loss_iou = ((1.0 - iou) * weight).sum() / target_scores_sum
 
         # DFL loss
