@@ -105,71 +105,86 @@ class DFLoss(nn.Module):
         ).mean(-1, keepdim=True)
 
 import math
-def bbox_iou_wiou(box1, box2, xywh=False, eps=1e-7):
+
+
+def bbox_iou_wiou(box1, box2, xywh=True, eps=1e-7, version='v3'):
     """
-    YOLO-compatible WIoU-v3 (returns per-foreground IoU only)
-    box1, box2: (N, 4) where N = number of foreground matches
+    Calculate WIoU (Wise-IoU) between two sets of boxes.
+
+    Args:
+        box1 (torch.Tensor): Predicted boxes (N, 4)
+        box2 (torch.Tensor): Ground truth boxes (N, 4)
+        xywh (bool): If True, boxes are in [x, y, w, h] format
+        eps (float): Small value to avoid division by zero
+        version (str): WIoU version - 'v1', 'v2', or 'v3'
+
+    Returns:
+        torch.Tensor: WIoU values (N,) or (N, 1)
     """
 
-    # Convert to xyxy
+    # Ensure boxes have same shape
+    assert box1.shape == box2.shape, f"Box shapes must match: {box1.shape} vs {box2.shape}"
+
+    # Convert to xyxy format if needed
     if xywh:
-        x1, y1, w1, h1 = box1.T
-        x2, y2, w2, h2 = box2.T
-        b1_x1, b1_y1 = x1 - w1 / 2, y1 - h1 / 2
-        b1_x2, b1_y2 = x1 + w1 / 2, y1 + h1 / 2
-        b2_x1, b2_y1 = x2 - w2 / 2, y2 - h2 / 2
-        b2_x2, b2_y2 = x2 + w2 / 2, y2 + h2 / 2
+        (x1, y1, w1, h1), (x2, y2, w2, h2) = box1.chunk(4, -1), box2.chunk(4, -1)
+        b1_x1, b1_x2, b1_y1, b1_y2 = x1 - w1 / 2, x1 + w1 / 2, y1 - h1 / 2, y1 + h1 / 2
+        b2_x1, b2_x2, b2_y1, b2_y2 = x2 - w2 / 2, x2 + w2 / 2, y2 - h2 / 2, y2 + h2 / 2
     else:
-        b1_x1, b1_y1, b1_x2, b1_y2 = box1.T
-        b2_x1, b2_y1, b2_x2, b2_y2 = box2.T
+        b1_x1, b1_y1, b1_x2, b1_y2 = box1.chunk(4, -1)
+        b2_x1, b2_y1, b2_x2, b2_y2 = box2.chunk(4, -1)
+        w1, h1 = b1_x2 - b1_x1, (b1_y2 - b1_y1).clamp(min=eps)
+        w2, h2 = b2_x2 - b2_x1, (b2_y2 - b2_y1).clamp(min=eps)
 
-    # Intersection
-    inter = (
-        (torch.min(b1_x2, b2_x2) - torch.max(b1_x1, b2_x1)).clamp(0) *
-        (torch.min(b1_y2, b2_y2) - torch.max(b1_y1, b2_y1)).clamp(0)
-    )
+    # Intersection area
+    inter = (b1_x2.minimum(b2_x2) - b1_x1.maximum(b2_x1)).clamp_(0) * \
+            (b1_y2.minimum(b2_y2) - b1_y1.maximum(b2_y1)).clamp_(0)
 
-    # Union
-    area1 = (b1_x2 - b1_x1).clamp(0) * (b1_y2 - b1_y1).clamp(0)
-    area2 = (b2_x2 - b2_x1).clamp(0) * (b2_y2 - b2_y1).clamp(0)
-    union = area1 + area2 - inter + eps
+    # Union area
+    union = w1 * h1 + w2 * h2 - inter + eps
 
-    iou = inter / union  # (N,)
+    # IoU
+    iou = inter / union
 
-    # ---------- WIoU penalty ----------
-    cx1 = (b1_x1 + b1_x2) / 2
-    cy1 = (b1_y1 + b1_y2) / 2
-    cx2 = (b2_x1 + b2_x2) / 2
-    cy2 = (b2_y1 + b2_y2) / 2
+    # Center distance calculations
+    cw = b1_x2.maximum(b2_x2) - b1_x1.minimum(b2_x1)
+    ch = b1_y2.maximum(b2_y2) - b1_y1.minimum(b2_y1)
 
-    center_dist = (cx1 - cx2) ** 2 + (cy1 - cy2) ** 2
+    c_x1 = (b1_x1 + b1_x2) / 2
+    c_y1 = (b1_y1 + b1_y2) / 2
+    c_x2 = (b2_x1 + b2_x2) / 2
+    c_y2 = (b2_y1 + b2_y2) / 2
 
-    cw = torch.max(b1_x2, b2_x2) - torch.min(b1_x1, b2_x1)
-    ch = torch.max(b1_y2, b2_y2) - torch.min(b1_y1, b2_y1)
-    diag = cw ** 2 + ch ** 2 + eps
+    center_dist_sq = (c_x1 - c_x2) ** 2 + (c_y1 - c_y2) ** 2
+    c_diag_sq = cw ** 2 + ch ** 2 + eps
 
-    distance_penalty = center_dist / diag
+    distance_attention = center_dist_sq / c_diag_sq
+
+    if version == 'v1':
+        return iou - distance_attention
 
     # Aspect ratio penalty
-    w1 = b1_x2 - b1_x1
-    h1 = b1_y2 - b1_y1
-    w2 = b2_x2 - b2_x1
-    h2 = b2_y2 - b2_y1
-
-    v = (4 / math.pi**2) * (torch.atan(w2 / h2) - torch.atan(w1 / h1)) ** 2
+    v = (4 / (math.pi ** 2)) * ((torch.atan(w2 / h2) - torch.atan(w1 / h1)) ** 2)
     with torch.no_grad():
         alpha = v / (1 - iou + v + eps)
 
-    shape_penalty = alpha * v
+    shape_attention = v * alpha
 
-    # ---------- WIoU-v3 ----------
-    with torch.no_grad():
-        beta = distance_penalty + shape_penalty
-        focal = torch.exp(-beta / (beta.mean() + eps))
+    if version == 'v2':
+        r = (distance_attention + shape_attention).detach()
+        focal_factor = torch.exp(r)
+        return iou - distance_attention - shape_attention
 
-    wiou = iou - distance_penalty - shape_penalty
-    return wiou * focal  # (N,)
+    if version == 'v3':
+        with torch.no_grad():
+            quality_metric = distance_attention + shape_attention
+            beta = quality_metric
+            focal_factor = torch.exp(-beta / (beta.mean() + eps))
 
+        # Return IoU directly (focal factor applied in loss calculation)
+        return iou * focal_factor - distance_attention * focal_factor - shape_attention * focal_factor
+
+    return iou
 
 class BboxLoss(nn.Module):
     """Criterion class for computing training losses for bounding boxes."""
@@ -191,7 +206,12 @@ class BboxLoss(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Compute IoU and DFL losses for bounding boxes."""
         weight = target_scores.sum(-1)[fg_mask].unsqueeze(-1)
-        iou = bbox_iou_wiou(pred_bboxes, target_bboxes, xywh=False)
+        print(f"pred_bboxes shape: {pred_bboxes.shape}")
+        print(f"target_bboxes shape: {target_bboxes.shape}")
+        print(f"fg_mask sum: {fg_mask.sum()}")
+        print(f"pred_bboxes[fg_mask] shape: {pred_bboxes[fg_mask].shape}")
+        print(f"target_bboxes[fg_mask] shape: {target_bboxes[fg_mask].shape}")
+        iou = bbox_iou_wiou(pred_bboxes, target_bboxes, xywh=False, version='v3')
         loss_iou = ((1.0 - iou) * weight).sum() / target_scores_sum
 
         # DFL loss
