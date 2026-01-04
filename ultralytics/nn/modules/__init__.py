@@ -18,6 +18,11 @@ Examples:
 """
 
 from .block import (
+    DualBranchBottleneckBlock,
+    C3k2_DBB,
+    MultiDimensionalCollaborativeAttention,
+    ChannelSelectiveFusionBlock,
+    A2C2f_CSFB,
     C1,
     C2,
     C2PSA,
@@ -103,6 +108,11 @@ from .transformer import (
 )
 
 __all__ = (
+    "A2C2f_CSFB",
+    "DualBranchBottleneckBlock",
+    "C3k2_DBB",
+    "MultiDimensionalCollaborativeAttention",
+    "ChannelSelectiveFusionBlock",
     "AIFI",
     "C1",
     "C2",

@@ -68,6 +68,11 @@ from ultralytics.nn.modules import (
     YOLOEDetect,
     YOLOESegment,
     v10Detect,
+    C3k2_DBB,
+    A2C2f_CSFB,
+    ChannelSelectiveFusionBlock,
+    MultiDimensionalCollaborativeAttention
+
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, LOGGER, YAML, colorstr, emojis
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
@@ -1517,6 +1522,10 @@ def parse_model(d, ch, verbose=True):
         LOGGER.info(f"\n{'':>3}{'from':>20}{'n':>3}{'params':>10}  {'module':<45}{'arguments':<30}")
     ch = [ch]
     layers, save, c2 = [], [], ch[-1]  # layers, savelist, ch out
+
+    # ============================================================================
+    # MODIFICATION: Add YOLO-Extreme modules to base_modules
+    # ============================================================================
     base_modules = frozenset(
         {
             Classify,
@@ -1553,8 +1562,15 @@ def parse_model(d, ch, verbose=True):
             SCDown,
             C2fCIB,
             A2C2f,
+            # YOLO-Extreme modules
+            C3k2_DBB,  # ADD THIS
+            A2C2f_CSFB,  # ADD THIS
         }
     )
+
+    # ============================================================================
+    # MODIFICATION: Add YOLO-Extreme modules to repeat_modules
+    # ============================================================================
     repeat_modules = frozenset(  # modules with 'repeat' arguments
         {
             BottleneckCSP,
@@ -1572,8 +1588,12 @@ def parse_model(d, ch, verbose=True):
             C2fCIB,
             C2PSA,
             A2C2f,
+            # YOLO-Extreme modules
+            C3k2_DBB,  # ADD THIS
+            A2C2f_CSFB,  # ADD THIS
         }
     )
+
     for i, (f, n, m, args) in enumerate(d["backbone"] + d["head"]):  # from, number, module, args
         m = (
             getattr(torch.nn, m[3:])
@@ -1603,10 +1623,28 @@ def parse_model(d, ch, verbose=True):
                 legacy = False
                 if scale in "mlx":
                     args[3] = True
+
+            # ============================================================================
+            # MODIFICATION: Add handling for C3k2_DBB (similar to C3k2)
+            # ============================================================================
+            if m is C3k2_DBB:  # ADD THIS BLOCK
+                legacy = False
+                if scale in "mlx":
+                    args[3] = True
+
             if m is A2C2f:
                 legacy = False
                 if scale in "lx":  # for L/X sizes
                     args.extend((True, 1.2))
+
+            # ============================================================================
+            # MODIFICATION: Add handling for A2C2f_CSFB (similar to A2C2f)
+            # ============================================================================
+            if m is A2C2f_CSFB:  # ADD THIS BLOCK
+                legacy = False
+                if scale in "lx":
+                    args.extend((True, 1.2))
+
             if m is C2fCIB:
                 legacy = False
         elif m is AIFI:
@@ -1623,8 +1661,26 @@ def parse_model(d, ch, verbose=True):
             args = [ch[f]]
         elif m is Concat:
             c2 = sum(ch[x] for x in f)
+
+        # ============================================================================
+        # MODIFICATION: Add handling for MCAM (single input, single output)
+        # ============================================================================
+        elif m is MultiDimensionalCollaborativeAttention:
+            c1 = ch[f]
+            c2 = c1  # MCAM preserves channel dimensions
+            args = [c1]
+            # ============================================================================
+        # MODIFICATION: Add handling for CSFB (dual input fusion)
+        # ============================================================================
+        elif m is ChannelSelectiveFusionBlock:  # ADD THIS BLOCK
+            # CSFB takes two inputs and fuses them
+            c2 = sum(ch[x] for x in f)
+            args = []
+            # args = []# Output channels from YAML
+            # No need to modify args, CSFB will handle input channels internally
+
         elif m in frozenset(
-            {Detect, WorldDetect, YOLOEDetect, Segment, YOLOESegment, Pose, OBB, ImagePoolingAttn, v10Detect}
+                {Detect, WorldDetect, YOLOEDetect, Segment, YOLOESegment, Pose, OBB, ImagePoolingAttn, v10Detect}
         ):
             args.append([ch[x] for x in f])
             if m is Segment or m is YOLOESegment:

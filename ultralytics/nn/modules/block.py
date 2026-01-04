@@ -54,6 +54,212 @@ __all__ = (
     "TorchVision",
 )
 
+"""
+YOLO-Extreme Module Implementations
+Based on the paper: YOLO-Extreme for foggy weather obstacle detection
+
+Key Enhancements:
+1. Dual-Branch Bottleneck Block (DBB) - Replaces C3K2 modules
+2. Multi-Dimensional Collaborative Attention Module (MCAM) - Added at backbone end
+3. Channel-Selective Fusion Block (CSFB) - Replaces fusion in neck
+"""
+
+
+class DualBranchBottleneckBlock(nn.Module):
+    """
+    Dual-Branch Bottleneck Block (DBB) from paper
+    Simple dual-branch design with group conv + pointwise conv
+    """
+
+    def __init__(self, in_channels, out_channels=None, groups=8, shortcut=True):
+        super().__init__()
+
+        if out_channels is None:
+            out_channels = in_channels
+
+        self.shortcut = shortcut and in_channels == out_channels
+
+        # Ensure groups is valid
+        valid_groups = self._get_valid_groups(out_channels, groups)
+
+        # Shared initial convolution
+        self.conv_shared = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.SiLU(inplace=True)
+        )
+
+        # Local branch (group convolution)
+        self.local_branch = nn.Conv2d(
+            out_channels, out_channels,
+            kernel_size=3, padding=1,
+            groups=valid_groups,
+            bias=False
+        )
+
+        # Global branch (pointwise convolution)
+        self.global_branch = nn.Conv2d(
+            out_channels, out_channels,
+            kernel_size=1,
+            bias=False
+        )
+
+        self.bn = nn.BatchNorm2d(out_channels)
+        self.act = nn.SiLU(inplace=True)
+
+    @staticmethod
+    def _get_valid_groups(channels, desired_groups):
+        """Find largest valid divisor <= desired_groups"""
+        for g in range(int(desired_groups), 0, -1):
+            if channels % g == 0:
+                return g
+        return 1
+
+    def forward(self, x):
+        residual = x if self.shortcut else 0
+        x1 = self.conv_shared(x)
+        local = self.local_branch(x1)
+        global_feat = self.global_branch(x1)
+        out = self.bn(local + global_feat)
+        return self.act(out + residual)
+
+
+class C3k2_DBB(nn.Module):
+    """C3K2 module with DBB blocks - exact replacement for C3K2"""
+
+    def __init__(self, c1, c2, n=1, shortcut=False, g=1, e=0.5, k=3):
+        super().__init__()
+        self.c = int(c2 * e)
+
+        self.cv1 = nn.Sequential(
+            nn.Conv2d(c1, 2 * self.c, 1, 1, bias=False),
+            nn.BatchNorm2d(2 * self.c),
+            nn.SiLU(inplace=True)
+        )
+
+        self.cv2 = nn.Sequential(
+            nn.Conv2d((2 + n) * self.c, c2, 1, bias=False),
+            nn.BatchNorm2d(c2),
+            nn.SiLU(inplace=True)
+        )
+
+        self.m = nn.ModuleList(
+            DualBranchBottleneckBlock(self.c, self.c, groups=8, shortcut=shortcut)
+            for _ in range(n)
+        )
+
+    def forward(self, x):
+        y = list(self.cv1(x).chunk(2, 1))
+        y.extend(m(y[-1]) for m in self.m)
+        return self.cv2(torch.cat(y, 1))
+
+
+class MultiDimensionalCollaborativeAttention(nn.Module):
+    """
+    MCAM from paper - Simple spatial + channel attention
+    """
+
+    def __init__(self, channels):
+        super().__init__()
+
+        # Spatial attention
+        self.spatial_conv = nn.Sequential(
+            nn.Conv2d(2, 1, kernel_size=7, padding=3, bias=False),
+            nn.BatchNorm2d(1),
+            nn.Sigmoid()
+        )
+
+        # Channel attention
+        self.channel_fc = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(channels, channels // 16, 1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(channels // 16, channels, 1),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        # Spatial attention
+        avg_out = torch.mean(x, dim=1, keepdim=True)
+        max_out, _ = torch.max(x, dim=1, keepdim=True)
+        spatial_attn = self.spatial_conv(torch.cat([avg_out, max_out], dim=1))
+
+        # Channel attention
+        channel_attn = self.channel_fc(x)
+        y_spatial = x * spatial_attn
+        y_channel = x * channel_attn
+        return (y_spatial + y_channel + x) / 3.0
+        # Apply both attentions
+        out = x * spatial_attn * channel_attn
+        return out
+
+
+class ChannelSelectiveFusionBlock(nn.Module):
+    """
+    CSFB from paper - Works exactly like Concat but adds channel attention
+    This is the CORRECT simple version from the paper
+    """
+
+    def __init__(self, channels=None, reduction_ratio=16):
+        super().__init__()
+        # Don't build anything in __init__ - wait for forward pass
+        self.channels = channels
+        self.reduction_ratio = reduction_ratio
+        self.attention_net = None
+
+    def forward(self, x):
+        # Handle list input from YOLO architecture
+        if isinstance(x, list):
+            # Concatenate like normal Concat module
+            x = torch.cat(x, dim=1)
+
+        # Build attention network on first forward pass
+        if self.attention_net is None:
+            c = x.shape[1]
+            compressed = max(c // self.reduction_ratio, 4)
+            self.attention_net = nn.Sequential(
+                nn.AdaptiveAvgPool2d(1),
+                nn.Conv2d(c, compressed, 1),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(compressed, c, 1),
+                nn.Sigmoid()
+            ).to(x.device)
+
+        # Apply channel attention
+        attn = self.attention_net(x)
+        return x * attn
+
+
+class A2C2f_CSFB(nn.Module):
+    """A2C2f module - standard implementation"""
+
+    def __init__(self, c1, c2, n=1, shortcut=False, g=1, e=0.5):
+        super().__init__()
+        self.c = int(c2 * e)
+
+        self.cv1 = nn.Sequential(
+            nn.Conv2d(c1, 2 * self.c, 1, 1, bias=False),
+            nn.BatchNorm2d(2 * self.c),
+            nn.SiLU(inplace=True)
+        )
+
+        self.cv2 = nn.Sequential(
+            nn.Conv2d((2 + n) * self.c, c2, 1, bias=False),
+            nn.BatchNorm2d(c2),
+            nn.SiLU(inplace=True)
+        )
+
+        self.m = nn.ModuleList(
+            DualBranchBottleneckBlock(self.c, self.c, groups=8, shortcut=shortcut)
+            for _ in range(n)
+        )
+
+    def forward(self, x):
+        y = list(self.cv1(x).chunk(2, 1))
+        y.extend(m(y[-1]) for m in self.m)
+        return self.cv2(torch.cat(y, 1))
+
+
 class DFL(nn.Module):
     """Integral module of Distribution Focal Loss (DFL).
 
