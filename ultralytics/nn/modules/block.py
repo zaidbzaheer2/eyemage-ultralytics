@@ -52,7 +52,108 @@ __all__ = (
     "ResNetLayer",
     "SCDown",
     "TorchVision",
+    "C3Vanilla"
 )
+
+class VanillaActivation(nn.ReLU):
+    """VanillaNet's series-informed activation (simplified for YOLO)"""
+
+    def __init__(self, dim, deploy=False):
+        super(VanillaActivation, self).__init__()
+        self.deploy = deploy
+        self.dim = dim
+
+        if self.deploy:
+            self.bias = nn.Parameter(torch.zeros(dim))
+        else:
+            self.bn = nn.BatchNorm2d(dim, eps=1e-6)
+
+    def forward(self, x):
+        if self.deploy:
+            return super().forward(x) + self.bias.view(1, -1, 1, 1)
+        else:
+            return self.bn(super().forward(x))
+
+
+class VanillaBlock(nn.Module):
+    """VanillaNet Block adapted for YOLO - replaces C3k2 block"""
+
+    def __init__(self, c1, c2, stride=1, deploy=False):
+        """
+        Args:
+            c1: Input channels
+            c2: Output channels
+            stride: Stride (use 1 for replacing C3k2)
+            deploy: Whether in deployment mode (fused convs)
+        """
+        super().__init__()
+        self.deploy = deploy
+
+        if self.deploy:
+            # Inference mode: single fused conv
+            self.conv = nn.Conv2d(c1, c2, kernel_size=1)
+        else:
+            # Training mode: two 1x1 convs as in original VanillaNet
+            self.conv1 = nn.Conv2d(c1, c1, kernel_size=1, bias=False)
+            self.bn1 = nn.BatchNorm2d(c1, eps=1e-6)
+
+            self.conv2 = nn.Conv2d(c1, c2, kernel_size=1, bias=False)
+            self.bn2 = nn.BatchNorm2d(c2, eps=1e-6)
+
+        # Pooling (identity for stride=1)
+        self.pool = nn.Identity() if stride == 1 else nn.MaxPool2d(stride)
+
+        # VanillaNet activation
+        self.act = VanillaActivation(c2, deploy=self.deploy)
+
+    def forward(self, x):
+        if self.deploy:
+            x = self.conv(x)
+        else:
+            # Original VanillaNet forward pass
+            x = self.conv1(x)
+            x = self.bn1(x)
+            x = F.leaky_relu(x, 0.1)  # Fixed leaky relu as in original
+
+            x = self.conv2(x)
+            x = self.bn2(x)
+
+        x = self.pool(x)
+        x = self.act(x)
+        return x
+
+
+class C3Vanilla(nn.Module):
+    """Drop-in replacement for C3k2 using VanillaNet blocks"""
+
+    def __init__(self, c1, c2, n=1, shortcut=True, g=1, e=0.5, deploy=False):
+        """
+        Args matching C3k2 signature:
+            c1: Input channels (auto from prev layer)
+            c2: Output channels
+            n: Number of VanillaBlocks (repeats)
+            shortcut: Ignored for VanillaNet (kept for compatibility)
+            g: Groups (ignored for VanillaNet)
+            e: Expansion ratio (ignored for VanillaNet)
+            deploy: Whether in deployment mode
+        """
+        super().__init__()
+
+        # Create n VanillaBlocks in sequence
+        blocks = []
+        in_channels = c1
+
+        # For n blocks, gradually expand channels
+        for i in range(n):
+            out_channels = c2 if i == n - 1 else max(c1, c2 // 2)
+            blocks.append(VanillaBlock(in_channels, out_channels, stride=1, deploy=deploy))
+            in_channels = out_channels
+
+        self.blocks = nn.Sequential(*blocks)
+
+    def forward(self, x):
+        return self.blocks(x)
+
 
 class DFL(nn.Module):
     """Integral module of Distribution Focal Loss (DFL).

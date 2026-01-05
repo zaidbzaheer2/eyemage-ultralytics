@@ -68,6 +68,7 @@ from ultralytics.nn.modules import (
     YOLOEDetect,
     YOLOESegment,
     v10Detect,
+    C3Vanilla
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, LOGGER, YAML, colorstr, emojis
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
@@ -1536,6 +1537,7 @@ def parse_model(d, ch, verbose=True):
             C2,
             C2f,
             C3k2,
+            C3Vanilla,
             RepNCSPELAN4,
             ELAN1,
             ADown,
@@ -1562,6 +1564,7 @@ def parse_model(d, ch, verbose=True):
             C2,
             C2f,
             C3k2,
+            C3Vanilla,
             C2fAttn,
             C3,
             C3TR,

@@ -59,6 +59,7 @@ from .block import (
     ResNetLayer,
     SCDown,
     TorchVision,
+    C3Vanilla
 )
 from .conv import (
     CBAM,
@@ -103,6 +104,7 @@ from .transformer import (
 )
 
 __all__ = (
+    "C3Vanilla",
     "AIFI",
     "C1",
     "C2",
