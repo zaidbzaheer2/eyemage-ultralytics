@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from ultralytics.utils.torch_utils import fuse_conv_and_bn
 
 from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, autopad
+from .simam import SimAM
 from .transformer import TransformerBlock
 
 __all__ = (
@@ -449,30 +450,28 @@ class GhostBottleneck(nn.Module):
 
 
 class Bottleneck(nn.Module):
-    """Standard bottleneck."""
-
     def __init__(
-        self, c1: int, c2: int, shortcut: bool = True, g: int = 1, k: tuple[int, int] = (3, 3), e: float = 0.5
+        self,
+        c1: int,
+        c2: int,
+        shortcut: bool = True,
+        g: int = 1,
+        k: tuple[int, int] = (3, 3),
+        e: float = 0.5,
+        use_simam: bool = False,   # default OFF
     ):
-        """Initialize a standard bottleneck module.
-
-        Args:
-            c1 (int): Input channels.
-            c2 (int): Output channels.
-            shortcut (bool): Whether to use shortcut connection.
-            g (int): Groups for convolutions.
-            k (tuple): Kernel sizes for convolutions.
-            e (float): Expansion ratio.
-        """
         super().__init__()
-        c_ = int(c2 * e)  # hidden channels
+        c_ = int(c2 * e)
         self.cv1 = Conv(c1, c_, k[0], 1)
         self.cv2 = Conv(c_, c2, k[1], 1, g=g)
         self.add = shortcut and c1 == c2
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Apply bottleneck with optional shortcut connection."""
-        return x + self.cv2(self.cv1(x)) if self.add else self.cv2(self.cv1(x))
+        self.attn = SimAM() if use_simam else nn.Identity()
+
+    def forward(self, x):
+        y = self.cv2(self.cv1(x))
+        y = self.attn(y)           # 🔥 SimAM HERE
+        return x + y if self.add else y
 
 
 class BottleneckCSP(nn.Module):
@@ -1078,7 +1077,7 @@ class C3k2(C2f):
         """
         super().__init__(c1, c2, n, shortcut, g, e)
         self.m = nn.ModuleList(
-            C3k(self.c, self.c, 2, shortcut, g) if c3k else Bottleneck(self.c, self.c, shortcut, g) for _ in range(n)
+            C3k(self.c, self.c, 2, shortcut, g) if c3k else Bottleneck(self.c, self.c, shortcut, g, use_simam=False) for _ in range(n)
         )
 
 
