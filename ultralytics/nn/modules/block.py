@@ -54,6 +54,9 @@ __all__ = (
     "TorchVision",
 )
 
+from .triplet import TripletAttention
+
+
 class DFL(nn.Module):
     """Integral module of Distribution Focal Loss (DFL).
 
@@ -1063,7 +1066,7 @@ class C3k2(C2f):
     """Faster Implementation of CSP Bottleneck with 2 convolutions."""
 
     def __init__(
-        self, c1: int, c2: int, n: int = 1, c3k: bool = False, e: float = 0.5, g: int = 1, shortcut: bool = True
+        self, c1: int, c2: int, n: int = 1, c3k: bool = False, e: float = 0.5, g: int = 1, shortcut: bool = True, use_triplet=False
     ):
         """Initialize C3k2 module.
 
@@ -1080,7 +1083,10 @@ class C3k2(C2f):
         self.m = nn.ModuleList(
             C3k(self.c, self.c, 2, shortcut, g) if c3k else Bottleneck(self.c, self.c, shortcut, g) for _ in range(n)
         )
+        self.attn = TripletAttention() if use_triplet else nn.Identity()
 
+    def forward(self, x):
+        return self.attn(super().forward(x))
 
 class C3k(C3):
     """C3k is a CSP bottleneck module with customizable kernel sizes for feature extraction in neural networks."""
